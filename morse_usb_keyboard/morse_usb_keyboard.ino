@@ -82,7 +82,7 @@
 #define ASC_CODE_BACKSPACE 0x08
 
 
-uint16_t get_letter(uint16_t code){
+char get_letter(uint16_t code){
     char c = 0;
     switch(code){
         case MORSE_CODE_A : c = 'a'; break;
@@ -190,7 +190,7 @@ void loop() {
             delay(1);
             det_counter++;                                  // 離された時間をカウント
             if(det_counter + bouncing_time > dot_len * LETTER_DIV_DOTS){    // 規定時間、離されていたら
-                uint16_t letter = get_letter(morse_code);                   // 短長点の組み合わせから文字を決定
+                char letter = get_letter(morse_code);                   // 短長点の組み合わせから文字を決定
                 if (letter != 0){
                     Keyboard.write(letter);                                 // キーボード送信
                     if (letter != ASC_CODE_BACKSPACE) next_space = true;    // 単語間のスペースのフラグを立てる
