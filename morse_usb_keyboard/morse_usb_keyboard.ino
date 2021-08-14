@@ -13,11 +13,11 @@
 #define PIN_TONE_FREQ_VOL   A3
 #define PIN_SPEED_VOL       A0
 
-#define BOUNCING_MS 20          // チャタリング無視時間
+#define BOUNCING_MS 20          // time of ignore bouncing
 #define LETTER_DIV_DOTS 2       // TYP:3
 #define WORD_DIV_DOTS 5         // TYP:7
 #define MINIMUM_DOT_MS 20
-#define COUNT_STOP_MS 10000     // 65.5秒以上押されるとオーバーフローする対策
+#define COUNT_STOP_MS 10000     // Measures to overflow when pressed for 65.5 seconds or more
 
 /* dot = 0b01, dash = 0b11 */
 #define MORSE_CODE_A 0b0111
@@ -149,9 +149,9 @@ uint16_t tone_freq;
 uint16_t bouncing_time;
 
 void buzz_morse(uint16_t code){
-    noTone(PIN_BUZZER_OUT);    // 念のため
+    noTone(PIN_BUZZER_OUT);    // Just in case
     if(code != 0){
-        while( (code & 0xC000) == 0 ) { code <<= 2;}   // 頭出し
+        while( (code & 0xC000) == 0 ) { code <<= 2;}   // Bring the significant bit to the beginning
         while( (code & 0xC000) != 0 ){
             uint16_t t = (code & 0xC000) >> 14;     // t = 1 or 3;
             tone(PIN_BUZZER_OUT, tone_freq);
@@ -166,8 +166,8 @@ void buzz_morse(uint16_t code){
 
 
 void read_volumes(){
-    dot_len = (analogRead(PIN_SPEED_VOL) >> 3) + MINIMUM_DOT_MS;    // 20 + 0~127 (240で旧3級、133で旧2級、100で旧1級）
-    tone_freq = 500 + (analogRead(PIN_TONE_FREQ_VOL) >> 1);         // 最小500Hz, 最大1011Hz
+    dot_len = (analogRead(PIN_SPEED_VOL) >> 3) + MINIMUM_DOT_MS;    // 20 + 0~127 
+    tone_freq = 500 + (analogRead(PIN_TONE_FREQ_VOL) >> 1);         // minimum 500Hz, MAX 1011Hz
 }
 
 void setup() {
@@ -178,22 +178,22 @@ void setup() {
     det_counter = 0;
     bouncing_time = BOUNCING_MS;
     morse_code = 0;
-    read_volumes();     // dot_len, tone_freq の初期化
+    read_volumes();     // initialize for dot_len, tone_freq 
     Serial.begin(115200);
     Keyboard.begin();
     buzz_morse(MORSE_CODE_V);
 }
 
 void loop() {
-    while (digitalRead(PIN_KEYER_IN) == HIGH){     // 押下待ち
+    while (digitalRead(PIN_KEYER_IN) == HIGH){     // waiting for contacts
         if(inputting){
             delay(1);
-            det_counter++;                                  // 離された時間をカウント
-            if(det_counter + bouncing_time > dot_len * LETTER_DIV_DOTS){    // 規定時間、離されていたら
-                char letter = get_letter(morse_code);                   // 短長点の組み合わせから文字を決定
+            det_counter++;                                  // counts released time.
+            if(det_counter + bouncing_time > dot_len * LETTER_DIV_DOTS){    // when contacs separeted for the specified time
+                char letter = get_letter(morse_code);                   // Characters are determined from the combination of dots and dashes.
                 if (letter != 0){
-                    Keyboard.write(letter);                                 // キーボード送信
-                    if (letter != ASC_CODE_BACKSPACE) next_space = true;    // 単語間のスペースのフラグを立てる
+                    Keyboard.write(letter);                                 // send for keyboard
+                    if (letter != ASC_CODE_BACKSPACE) next_space = true;    // Flag the space between words
                 }
                 inputting = false;
                 det_counter = 0;
@@ -204,7 +204,7 @@ void loop() {
             delay(1);
             det_counter++;
             if(det_counter > dot_len * WORD_DIV_DOTS){
-                Keyboard.write(' ');                    // 単語間のスペースを送出
+                Keyboard.write(' ');                    // Send spaces between words
                 next_space = false;
                 det_counter = 0;
             }
@@ -214,26 +214,26 @@ void loop() {
         }
         read_volumes();
     }
-    inputting = true;                           // キーが接になった。
-    tone(PIN_BUZZER_OUT, tone_freq);                // トーン開始
+    inputting = true;                           // In contact.
+    tone(PIN_BUZZER_OUT, tone_freq);                // starts the tone
     det_counter = 0;
-    //delay(bouncing_time);                      // チャタリングの防止（旧）
+    //delay(bouncing_time);                      // Prevention of chattering (old ver)
     uint16_t bounce_counter = 0;
-    while (bounce_counter < bouncing_time){     // 離されるのを待つ
+    while (bounce_counter < bouncing_time){     // waiting for the contacts go to off
         if(digitalRead(PIN_KEYER_IN) == LOW) {
-            bounce_counter = 0;                 // チャタリングを考慮して、連続してbouncing_time回 Hになったら抜ける方式に変更。
+            bounce_counter = 0;                 // In consideration of chattering, changed to a method that exits when bouncing_time times H continuously.
         }else{
             bounce_counter++;
         }
         delay(1);
-        det_counter++;                      // 押されている時間をカウント
+        det_counter++;                      // counts on time.
         det_counter = min(det_counter, COUNT_STOP_MS);
     }
-    // 離された
-    noTone(PIN_BUZZER_OUT);    // トーン停止
-    morse_code <<= 2;      // 2ビットシフト
-    uint16_t dot_dash = (det_counter - bouncing_time > dot_len * 2) ? 3 : 1;    // 離された時、カウントが閾値以下だったら 1, 閾値以上だったら 3
+    // released.
+    noTone(PIN_BUZZER_OUT);    // stop the tone.
+    morse_code <<= 2;      // left-shift for 2 bits
+    uint16_t dot_dash = (det_counter - bouncing_time > dot_len * 2) ? 3 : 1;    // When released, if the count is below the threshold 1, if it is above the threshold 3.
     morse_code |= dot_dash;
     det_counter = 0;
-    //delay(bouncing_time);                      // チャタリングの防止（旧）
+    //delay(bouncing_time);                      //  Prevention of chattering (old ver)
 }
