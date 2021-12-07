@@ -4,15 +4,27 @@
 * Decode morse code and send by USB keyboard with Arduino micro. の和文対応バージョン
 * License : GPLv3
 */
-#define WABUN
-#ifdef WABUN
-#include "Keyboard_jp.h"    // 日本語キーボード環境でIME ON、ローマ字入力の状態で使用。
+/* 
+* 変更履歴
+* 2021-12-06(1)　パドル入力に対応した。
+* 2021-12-06(2)  設定値をeepromに保存するようにした。
+* 2021-12-07     IMEの使用状態を選べるようにした。
+*/
+#define JAPANESE_KEYBOARD
+#ifdef JAPANESE_KEYBOARD
+#include "Keyboard_jp.h"    // 日本語キーボード
                             // https://mgt.blog.ss-blog.jp/2016-01-14
 #else
 #include "Keyboard.h"       // English Keyboard.
 #endif
 
-#define PIN_KEYER_IN        9
+#include <EEPROM.h>
+#define EEP_ADDR_USE_PADDLE     0x00
+#define EEP_ADDR_PADDLE_REVERSE 0x01
+#define EEP_ADDR_MODE_KANA      0x02
+
+#define PIN_KEYER_IN_L      8
+#define PIN_KEYER_IN_R      9
 #define PIN_CHECK_MODE      14
 #define PIN_BUZZER_OUT      10
 #define PIN_TONE_FREQ_VOL   A3
@@ -21,7 +33,7 @@
 #define BOUNCING_MS 20          // チャタリング無視時間
 #define LETTER_DIV_DOTS 2       // TYP:3
 #define WORD_DIV_DOTS 6         // TYP:7
-#define MINIMUM_DOT_MS 20
+#define MINIMUM_DOT_MS 20       // 最速のキースピード (1dot:20ms = 60 WPM)
 #define COUNT_STOP_MS 10000     // 65.5秒以上押されるとオーバーフローする対策
 
 /* dot = 0b01, dash = 0b11 */
@@ -144,10 +156,19 @@
 #define MORSE_CODE_W_LKAKKO	0b011101011101
 #define MORSE_CODE_W_RKAKKO	MORSE_CODE_RIGHT_PAREN
 
-bool wabun, tmp_eng;
+#define MORSE_CODE_MODE_PADDLE   0b01111101110101     // PD でパドルモード
+#define MORSE_CODE_MODE_STRAIGHT 0b01010111011101     // STR でストレートキーモード
+#define MORSE_CODE_MODE_REVERSE  0b0111010101010111   // REV でパドル接点反転モード
+#define MORSE_CODE_MODE_NORMAL   0b1101111111011101   // NOR でパドル接点通常モード
+#define MORSE_CODE_MODE_ALPHABET 0b011101111101       // ENG で英文モード
+#define MORSE_CODE_MODE_KANA     0b11011101111101     // KAN で日本語モード
 
-/* 子音(consonant)を入力する */
-char input_consonant(uint16_t code){
+bool mode_wabun, tmp_eng;
+bool kana_on, using_paddle, paddle_reverse;
+
+/* 子音(consonant)をUSBキーボードに出力する */
+/* かな入力時はIME ONにしてローマ字入力とすること */
+char output_consonant(uint16_t code){
     char c = 0;
     switch(code){
         case MORSE_CODE_W_KA : ;
@@ -200,9 +221,8 @@ char input_consonant(uint16_t code){
     return c;
 }
 
-
-/* 母音(vowel),数値を入力する */
-char input_vowelnumeric(uint16_t code){
+/* 母音(vowel),数値をUSBキーボードに出力する */
+char output_vowelnumeric(uint16_t code){
     char c = 0;
     switch(code){
         case MORSE_CODE_W_A : ;
@@ -276,18 +296,18 @@ char input_vowelnumeric(uint16_t code){
         case MORSE_CODE_DBL_QUOTE   : c = '\"'; break;
         case MORSE_CODE_BACKSPACE   : c = ASC_CODE_BACKSPACE; break;
 
-        case MORSE_CODE_W_RATA      : c = ']'; wabun = false;  break;
+        case MORSE_CODE_W_RATA      : c = ']'; mode_wabun = false;  break;
         case MORSE_CODE_W_RKAKKO    : c = '('; tmp_eng = true; break;
     }
     if (c != 0) {
         Keyboard.write(c);
-        Keyboard.write(KEY_RETURN);     // 母音を入力したら確定
+        if (kana_on) Keyboard.write(KEY_RETURN);     // 母音を入力したら確定 (IME ONかつローマ字入力にすること)
     }
     return c;
 }
 
-/* アルファベット,数値を入力する */
-char input_alphanumeric(uint16_t code){
+/* アルファベット,数値をUSBキーボードに出力する */
+char output_alphanumeric(uint16_t code){
     char c = 0;
     switch(code){
         case MORSE_CODE_A : c = 'A'; break;     // 日本語IMEを使用するときは、Shift- （つまり大文字）を入力する。
@@ -339,40 +359,77 @@ char input_alphanumeric(uint16_t code){
         case MORSE_CODE_EQUAL       : c = '='; break;
         case MORSE_CODE_DBL_QUOTE   : c = '"'; break;
         case MORSE_CODE_LEFT_PAREN  : c = '('; break;
-        case MORSE_CODE_RIGHT_PAREN : c = ')'; if (wabun) tmp_eng = false; break;
+        case MORSE_CODE_RIGHT_PAREN : c = ')'; if (mode_wabun) tmp_eng = false; break;
         case MORSE_CODE_BACKSPACE   : c = ASC_CODE_BACKSPACE; break;
 
-        #ifdef WABUN
-        case MORSE_CODE_W_HORE      : c = '['; wabun = true; break;
-        #endif
+        case MORSE_CODE_W_HORE      : c = '['; mode_wabun = true; break;    // 和文モードに入る
     }
     if (c != 0) {
         Keyboard.write(c);
-        #ifdef WABUN
-        Keyboard.write(KEY_RETURN);     // 日本語IMEにおいては、英数字は即確定する。
-        #endif
+        if (kana_on) Keyboard.write(KEY_RETURN);     // 日本語IMEにおいては、英数字は即確定する。
     }
     return c;
 }
 
-/* 入力した文字を返す */
-char input_key(uint16_t code){
+/* モード切替入力 */
+char input_mode_change(uint16_t code){
+    switch(code){
+        case MORSE_CODE_MODE_PADDLE : 
+            using_paddle = true;
+            EEPROM.write(EEP_ADDR_USE_PADDLE,1);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        case MORSE_CODE_MODE_STRAIGHT : 
+            using_paddle = false;
+            EEPROM.write(EEP_ADDR_USE_PADDLE,0);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        case MORSE_CODE_MODE_REVERSE : 
+            paddle_reverse = true;
+            EEPROM.write(EEP_ADDR_PADDLE_REVERSE,1);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        case MORSE_CODE_MODE_NORMAL : 
+            paddle_reverse = false;
+            EEPROM.write(EEP_ADDR_PADDLE_REVERSE,0);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        case MORSE_CODE_MODE_KANA : 
+            kana_on = true;
+            EEPROM.write(EEP_ADDR_MODE_KANA,1);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        case MORSE_CODE_MODE_ALPHABET : 
+            kana_on = false;
+            EEPROM.write(EEP_ADDR_MODE_KANA,0);
+            tone(PIN_BUZZER_OUT, 2000, 500);
+            break;
+        default: break;
+    }
+    return 0;
+}
+    
+
+/* 入力した文字をUSBキーボードとしてPCに出力する */
+char output_keybord(uint16_t code){
     char result = 0;
-    if(wabun && !tmp_eng){
-        result = input_consonant(code);
-        result = input_vowelnumeric(code);  
+    input_mode_change(code);
+    if(mode_wabun && !tmp_eng){
+        result = output_consonant(code);
+        result = output_vowelnumeric(code);  
     }else{
-        result = input_alphanumeric(code);
+        result = output_alphanumeric(code);
     }
     return result;
 }
 
 bool inputting, next_space;
 uint16_t morse_code;
-uint16_t det_counter, dot_len;
+uint16_t dot_len;
 uint16_t tone_freq;
 uint16_t bouncing_time;
 
+/* 指定のモールスコードをブザーから鳴らす */
 void buzz_morse(uint16_t code){
     noTone(PIN_BUZZER_OUT);    // 念のため
     if(code != 0){
@@ -389,35 +446,126 @@ void buzz_morse(uint16_t code){
     }
 }
 
+/* 現在の設定状態をモールスで鳴らす */
+void buzz_state(){
+    if (using_paddle) buzz_morse(MORSE_CODE_P);
+    else buzz_morse(MORSE_CODE_S);
 
+    if (paddle_reverse) buzz_morse(MORSE_CODE_R);
+    else buzz_morse(MORSE_CODE_N);
+
+    if (kana_on) buzz_morse(MORSE_CODE_K);
+    else buzz_morse(MORSE_CODE_E);
+}
+
+
+/* 接点を読み取って、パドルの状態を返す */
+/* 開放 = 0, 短点 = 1, 長点 = 2, 両方 = 3 */
+uint8_t input_keyer(bool paddle_reverse){
+    uint8_t paddle_state = 0;
+    if (digitalRead(PIN_KEYER_IN_L) == LOW){
+        paddle_state = paddle_reverse ? 2 : 1;
+    }
+    if (digitalRead(PIN_KEYER_IN_R) == LOW){
+        paddle_state += paddle_reverse ? 1 : 2;
+    }
+    return paddle_state;
+}
+
+/* パドル使用時に状態に応じて長短点を再生する */
+uint8_t play_dot_dash(uint8_t state){
+    static uint8_t last_play = 0;
+    uint8_t dot_dash = 0;
+    tone(PIN_BUZZER_OUT, tone_freq);
+    switch (state){
+        case 1:     //dot
+            dot_dash = 1;
+            break;
+        case 2:     //dash
+            dot_dash = 3;
+            break;
+        case 3:     //両押しはスクイーズ動作
+            dot_dash = (last_play == 1) ? 3 : 1;
+            break;
+        default:
+            dot_dash = 0;
+            break;
+    }
+    delay(dot_len * dot_dash);
+    last_play = dot_dash;
+    noTone(PIN_BUZZER_OUT);
+    delay(dot_len);
+    return last_play;
+}
+
+/* バグキーやストレートキー使用時に長短点を決定する */
+uint8_t detect_dot_dash(){
+    tone(PIN_BUZZER_OUT, tone_freq);                // トーン開始
+    uint16_t det_counter = 0;
+    uint16_t bounce_counter = 0;
+    while (bounce_counter < bouncing_time){     // 離されるのを待つ
+        if(input_keyer(paddle_reverse) != 0) {
+            bounce_counter = 0;                 // チャタリングを考慮して、連続してbouncing_time回 Hになったら抜ける方式に変更。
+        }else{
+            bounce_counter++;
+        }
+        delay(1);
+        det_counter++;                      // 押されている時間をカウント
+        det_counter = min(det_counter, COUNT_STOP_MS);
+    }
+    // 離された
+    noTone(PIN_BUZZER_OUT);    // トーン停止
+    return (det_counter - bouncing_time > dot_len * 2) ? 3 : 1;    // 離された時、カウントが閾値以下だったら 1, 閾値以上だったら 3
+}
+
+/* トーン周波数と速度を半固定抵抗から読みとる */
 void read_volumes(){
-    dot_len = (analogRead(PIN_SPEED_VOL) >> 3) + MINIMUM_DOT_MS;    // 20 + 0~127 (240で旧3級、133で旧2級、100で旧1級）
+    dot_len = (analogRead(PIN_SPEED_VOL) >> 3) + MINIMUM_DOT_MS;    // 20 + 0~127 60～8 WPM (240で旧3級、133で旧2級、100で旧1級）
     tone_freq = 500 + (analogRead(PIN_TONE_FREQ_VOL) >> 1);         // 最小500Hz, 最大1011Hz
 }
 
+/* ボタンを押しながら電源ONでリセット */
+void reset_settings(){
+    EEPROM.write(EEP_ADDR_USE_PADDLE,0);
+    EEPROM.write(EEP_ADDR_PADDLE_REVERSE,0);
+    EEPROM.write(EEP_ADDR_MODE_KANA,0);
+    tone(PIN_BUZZER_OUT, 2000, 1000);
+    while(digitalRead(PIN_CHECK_MODE) == LOW){;}    //離されるのを待つ
+    delay(200);
+}
+
+/* 初期化処理 */
 void setup() {
-    pinMode(PIN_KEYER_IN, INPUT_PULLUP);
+    pinMode(PIN_KEYER_IN_L, INPUT_PULLUP);
+    pinMode(PIN_KEYER_IN_R, INPUT_PULLUP);
     pinMode(PIN_CHECK_MODE, INPUT_PULLUP);
     inputting = false;
     next_space = false;
-    det_counter = 0;
     bouncing_time = BOUNCING_MS;
     morse_code = 0;
     read_volumes();     // dot_len, tone_freq の初期化
-    wabun = false;
+    if (digitalRead(PIN_CHECK_MODE) == LOW) reset_settings();
+    using_paddle = EEPROM.read(EEP_ADDR_USE_PADDLE);
+    paddle_reverse = EEPROM.read(EEP_ADDR_PADDLE_REVERSE);
+    kana_on = EEPROM.read(EEP_ADDR_MODE_KANA);
+    mode_wabun = false;
     tmp_eng = false;
     Serial.begin(115200);
     Keyboard.begin();
-    buzz_morse(MORSE_CODE_V);
+    buzz_state();
 }
 
+/* メインループ */
 void loop() {
-    while (digitalRead(PIN_KEYER_IN) == HIGH){     // 押下待ち
+    uint8_t keying_state = 0;
+    uint16_t det_counter = using_paddle ? dot_len : bouncing_time;  // カウンタの初期値
+    while (keying_state == 0){     // 押下待ち
+        keying_state = input_keyer(paddle_reverse);
         if(inputting){
             delay(1);
             det_counter++;                                  // 離された時間をカウント
-            if(det_counter + bouncing_time > dot_len * LETTER_DIV_DOTS){    // 規定時間、離されていたら
-                char letter = input_key(morse_code);                        // 文字を入力
+            if(det_counter > dot_len * LETTER_DIV_DOTS){    // 規定時間、離されていたら
+                char letter = output_keybord(morse_code);                        // 文字を入力
                 if ((letter != 0) && (letter != ASC_CODE_BACKSPACE)) next_space = true;    // 単語間のスペースのフラグを立てる
                 inputting = false;
                 det_counter = 0;
@@ -439,25 +587,12 @@ void loop() {
         read_volumes();
     }
     inputting = true;                           // キーが接になった。
-    tone(PIN_BUZZER_OUT, tone_freq);                // トーン開始
-    det_counter = 0;
-    //delay(bouncing_time);                      // チャタリングの防止（旧）
-    uint16_t bounce_counter = 0;
-    while (bounce_counter < bouncing_time){     // 離されるのを待つ
-        if(digitalRead(PIN_KEYER_IN) == LOW) {
-            bounce_counter = 0;                 // チャタリングを考慮して、連続してbouncing_time回 Hになったら抜ける方式に変更。
-        }else{
-            bounce_counter++;
-        }
-        delay(1);
-        det_counter++;                      // 押されている時間をカウント
-        det_counter = min(det_counter, COUNT_STOP_MS);
+    uint16_t dot_dash;
+    if(using_paddle){  /* パドルの場合 */
+        dot_dash = (uint16_t)play_dot_dash(keying_state);
+    }else{             /* バグキーやストレートキーの場合 */
+        dot_dash = (uint16_t)detect_dot_dash();
     }
-    // 離された
-    noTone(PIN_BUZZER_OUT);    // トーン停止
-    morse_code <<= 2;      // 2ビットシフト
-    uint16_t dot_dash = (det_counter - bouncing_time > dot_len * 2) ? 3 : 1;    // 離された時、カウントが閾値以下だったら 1, 閾値以上だったら 3
-    morse_code |= dot_dash;
-    det_counter = 0;
-    //delay(bouncing_time);                      // チャタリングの防止（旧）
+    morse_code <<= 2;       // 左2ビットシフト
+    morse_code |= dot_dash; // 最下位2bitに 01 or 11 を入れる
 }
