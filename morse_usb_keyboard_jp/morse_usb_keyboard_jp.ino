@@ -428,6 +428,7 @@ uint16_t morse_code;
 uint16_t dot_len;
 uint16_t tone_freq;
 uint16_t bouncing_time;
+uint8_t next_squeeze = 0;
 
 /* 指定のモールスコードをブザーから鳴らす */
 void buzz_morse(uint16_t code){
@@ -475,26 +476,39 @@ uint8_t input_keyer(bool paddle_reverse){
 /* パドル使用時に状態に応じて長短点を再生する */
 uint8_t play_dot_dash(uint8_t state){
     static uint8_t last_play = 0;
-    uint8_t dot_dash = 0;
+    if (next_squeeze != 0 ) state = 3;  // 前回の鳴動中にスクイーズ動作が発生していたときは上書きする。
     tone(PIN_BUZZER_OUT, tone_freq);
     switch (state){
         case 1:     //dot
-            dot_dash = 1;
+            last_play = 1;
             break;
         case 2:     //dash
-            dot_dash = 3;
+            last_play = 3;
             break;
         case 3:     //両押しはスクイーズ動作
-            dot_dash = (last_play == 1) ? 3 : 1;
+            last_play = (last_play == 1) ? 3 : 1;
             break;
         default:
-            dot_dash = 0;
+            last_play = 0;
             break;
     }
-    delay(dot_len * dot_dash);
-    last_play = dot_dash;
+    //delay(dot_len * dot_dash);
+    next_squeeze = 0;
+    uint16_t i = 0;
+    while(i < (dot_len * last_play)){
+        if (input_keyer(paddle_reverse) == 3) next_squeeze = 1; // 鳴動中にスクイーズ動作が発生したかどうかを検出する。 QとかYの短点を取り逃す対策
+        delay(1);
+        i++;
+    }
     noTone(PIN_BUZZER_OUT);
-    delay(dot_len);
+    //delay(dot_len);
+    i = 0;
+    while(i < dot_len){
+        if (input_keyer(paddle_reverse) == 3) next_squeeze = 1; // 休止時間も同様。
+        delay(1);
+        i++;
+    }
+    //if (input_keyer(paddle_reverse) == 0) next_squeeze = 0;     // CE が CTになる対策（旧）
     return last_play;
 }
 
@@ -568,6 +582,7 @@ void loop() {
                 char letter = output_keybord(morse_code);                        // 文字を入力
                 if ((letter != 0) && (letter != ASC_CODE_BACKSPACE)) next_space = true;    // 単語間のスペースのフラグを立てる
                 inputting = false;
+                next_squeeze = 0;                           // パドル操作時に CE が CTになる対策（新）
                 det_counter = 0;
                 morse_code= 0;
             }
