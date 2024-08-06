@@ -33,9 +33,10 @@
 
 #define BOUNCING_MS 20          // チャタリング無視時間
 #define LETTER_DIV_DOTS 2       // TYP:3
-#define WORD_DIV_DOTS 6         // TYP:7
+#define WORD_DIV_DOTS 5         // TYP:7
 #define MINIMUM_DOT_MS 20       // 最速のキースピード (1dot:20ms = 60 WPM)
 #define COUNT_STOP_MS 10000     // 65.5秒以上押されるとオーバーフローする対策
+#define BTN_CHK_HOLD_MS 300
 
 /* dot = 0b01, dash = 0b11 */
 #define MORSE_CODE_A 0b0111
@@ -96,8 +97,10 @@
 #define MORSE_CODE__KK MORSE_CODE_RIGHT_PAREN   // )
 #define MORSE_CODE__RR MORSE_CODE_DBLQUOTE      // "
 #define MORSE_CODE__HH MORSE_CODE_BACKSPACE     // BS
+#define MORSE_CODE__SK 0b010101110111           // SK (VA) ~
 
 #define ASC_CODE_BACKSPACE 0x08
+#define ASC_CODE_ENTER     0x0D
 
 #define MORSE_CODE_W_A	0b1111011111
 #define MORSE_CODE_W_I	0b0111
@@ -296,6 +299,7 @@ char output_vowelnumeric(uint16_t code){
         case MORSE_CODE_COMMA       : c = ','; break;
         case MORSE_CODE_DBL_QUOTE   : c = '\"'; break;
         case MORSE_CODE_BACKSPACE   : c = ASC_CODE_BACKSPACE; break;
+        case MORSE_CODE__SK         : c = '~'; break;
 
         case MORSE_CODE_W_RATA      : c = ']'; mode_wabun = false;  break;
         case MORSE_CODE_W_RKAKKO    : c = '('; tmp_eng = true; break;
@@ -362,6 +366,7 @@ char output_alphanumeric(uint16_t code){
         case MORSE_CODE_LEFT_PAREN  : c = '('; break;
         case MORSE_CODE_RIGHT_PAREN : c = ')'; if (mode_wabun) tmp_eng = false; break;
         case MORSE_CODE_BACKSPACE   : c = ASC_CODE_BACKSPACE; break;
+        case MORSE_CODE__SK         : c = '~'; break;
 
         case MORSE_CODE_W_HORE      : c = '['; mode_wabun = true; break;    // 和文モードに入る
     }
@@ -430,6 +435,7 @@ uint16_t dot_len;
 uint16_t tone_freq;
 uint16_t bouncing_time;
 uint8_t next_squeeze = 0;
+uint16_t btn_hold_time = 0;
 
 /* 指定のモールスコードをブザーから鳴らす */
 void buzz_morse(uint16_t code){
@@ -598,7 +604,17 @@ void loop() {
             }
         }
         if(digitalRead(PIN_CHECK_MODE) == LOW){
-            buzz_morse(MORSE_CODE_V);
+            btn_hold_time++;
+            delay (1);
+            if (btn_hold_time > BTN_CHK_HOLD_MS){   // ボタン長押しでVVVを鳴動させる
+                buzz_morse(MORSE_CODE_V);
+                btn_hold_time = BTN_CHK_HOLD_MS;
+            }
+        }else{
+            if ((btn_hold_time > 0) && (btn_hold_time < BTN_CHK_HOLD_MS)){
+                Keyboard.write(KEY_RETURN);         // ボタン短押しでENTERを送る
+            }
+            btn_hold_time = 0;
         }
         read_volumes();
     }
